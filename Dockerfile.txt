@@ -1,0 +1,235 @@
+# Dockerfile with proper GCC version for rstan
+# User: edward829
+# Fix: Install newer GCC as suggested by Zhoujingpeng Wei
+# Modified: zinck from GitHub instead of CRAN
+    
+FROM rocker/r-ver:4.1.2
+    
+LABEL maintainer="edward829"
+LABEL description="R container with newer GCC for rstan compilation"
+    
+# Install newer GCC and build tools FIRST
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository ppa:ubuntu-toolchain-r/test \
+    && apt-get update && apt-get install -y \
+    gcc-9 \
+    g++-9 \
+    gfortran-9 \
+    build-essential \
+    libxml2-dev \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    libgit2-dev \
+    libfontconfig1-dev \
+    libcairo2-dev \ 
+    libharfbuzz-dev \
+    libfribidi-dev \
+    libtiff5-dev \  
+    libjpeg-dev \
+    libpng-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    libgsl-dev \
+    libmpfr-dev \
+    wget \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set newer GCC as default (CRITICAL for rstan)
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 90 \
+    && update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-9 90
+    
+# Verify GCC version
+RUN gcc --version && g++ --version && gfortran --version
+    
+# Set R library path
+ENV R_LIBS_USER=/usr/local/lib/R/site-library
+ENV R_LIBS=/usr/local/lib/R/site-library
+    
+# Create R library directory
+RUN mkdir -p /usr/local/lib/R/site-library && \
+    chmod 755 /usr/local/lib/R/site-library
+    
+# Create Makevars file for proper compilation flags
+RUN mkdir -p ~/.R && \
+    echo "CC=gcc-9" > ~/.R/Makevars && \
+    echo "CXX=g++-9" >> ~/.R/Makevars && \
+    echo "CXX11=g++-9" >> ~/.R/Makevars && \
+    echo "CXX14=g++-9" >> ~/.R/Makevars && \
+    echo "CXX17=g++-9" >> ~/.R/Makevars && \
+    echo "FC=gfortran-9" >> ~/.R/Makevars && \
+    echo "F77=gfortran-9" >> ~/.R/Makevars && \
+    echo "CXXFLAGS=-O3 -mtune=native -march=native" >> ~/.R/Makevars && \
+    echo "CXX11FLAGS=-O3 -mtune=native -march=native" >> ~/.R/Makevars && \
+    echo "CXX14FLAGS=-O3 -mtune=native -march=native" >> ~/.R/Makevars && \
+    cat ~/.R/Makevars
+
+# Install remotes first
+RUN R -e "cat('Installing remotes with newer GCC...\n'); \
+    install.packages('remotes', repos='https://cran.rstudio.com/', dependencies=TRUE); \
+    cat('remotes installed successfully\n')"
+
+# Install basic dependencies
+RUN R -e "cat('Installing basic dependencies...\n'); \
+    install.packages(c('Rcpp', 'RcppEigen', 'BH', 'RcppArmadillo'), \
+    repos='https://cran.rstudio.com/', dependencies=TRUE); \ 
+    cat('Basic dependencies installed\n')"  
+                       
+# Clean existing rstan/StanHeaders
+RUN R -e "cat('Cleaning existing Stan packages...\n'); \
+    to_remove <- c('rstan', 'StanHeaders'); \
+    for(pkg in to_remove) { \
+        if(pkg %in% rownames(installed.packages())) { \
+            remove.packages(pkg); \
+            cat('Removed', pkg, '\n'); \
+        } \
+    }"
+
+# Install StanHeaders 2.26.25 with newer GCC
+RUN R -e "cat('Installing StanHeaders 2.26.25 with GCC 9...\n'); \
+    library(remotes); \
+    Sys.setenv(CC='gcc-9', CXX='g++-9', CXX11='g++-9', CXX14='g++-9'); \
+    tryCatch({ \
+        install_version('StanHeaders', version = '2.26.25', \
+                       repos = 'https://cran.rstudio.com/', \
+                       upgrade = 'never', \
+                       force = TRUE); \
+        cat('StanHeaders installed successfully\n'); \
+    }, error = function(e) { \
+        cat('StanHeaders installation error:', e\$message, '\n'); \
+        stop('StanHeaders installation failed'); \
+    })"
+                       
+# Verify StanHeaders
+RUN R -e "cat('Verifying StanHeaders...\n'); \  
+    if('StanHeaders' %in% rownames(installed.packages())) { \
+        version <- packageVersion('StanHeaders'); \
+        cat('✓ StanHeaders version:', as.character(version), '\n'); \
+        library(StanHeaders); \
+        cat('✓ StanHeaders loads successfully\n'); \
+    } else { \
+        stop('StanHeaders verification failed'); \
+    }"
+                       
+# Install rstan 2.21.8 with newer GCC
+RUN R -e "cat('Installing rstan 2.21.8 with GCC 9...\n'); \
+    library(remotes); \
+    Sys.setenv(CC='gcc-9', CXX='g++-9', CXX11='g++-9', CXX14='g++-9'); \
+    tryCatch({ \
+        install_version('rstan', version = '2.21.8', \
+                       repos = 'https://cran.rstudio.com/', \
+                       upgrade = 'never', \
+                       force = TRUE); \
+        cat('rstan installed successfully\n'); \
+    }, error = function(e) { \
+        cat('rstan installation error:', e\$message, '\n'); \
+        stop('rstan installation failed'); \
+    })"
+
+# Verify rstan
+RUN R -e "cat('Verifying rstan...\n'); \
+    if('rstan' %in% rownames(installed.packages())) { \
+        version <- packageVersion('rstan'); \
+        cat('✓ rstan version:', as.character(version), '\n'); \
+        library(rstan); \
+        cat('✓ rstan loads successfully\n'); \
+    } else { \
+        stop('rstan verification failed'); \
+    }"
+                       
+# Install devtools if not already available (for zinck installation)
+RUN R -e "cat('Installing devtools for zinck...\n'); \
+    if (!requireNamespace('devtools', quietly = TRUE)) { \
+        install.packages('devtools', repos='https://cran.rstudio.com/'); \
+    }; \
+    cat('devtools ready\n')"
+
+# Install zinck dependencies step by step
+RUN R -e "cat('=== Installing phyloseq from Bioconductor ===\n'); \
+    # Install BiocManager first \
+    if (!requireNamespace('BiocManager', quietly = TRUE)) { \
+        install.packages('BiocManager', repos='https://cran.rstudio.com/'); \
+    }; \
+    library(BiocManager); \
+    cat('BiocManager version:', as.character(packageVersion('BiocManager')), '\n'); \
+    \
+    # Set Bioconductor version (important!) \
+    cat('Setting Bioconductor version...\n'); \
+    BiocManager::install(version = '3.14', update = FALSE, ask = FALSE); \
+    \
+    # Install phyloseq specifically from Bioconductor \
+    cat('Installing phyloseq from Bioconductor...\n'); \
+    tryCatch({ \  
+        BiocManager::install('phyloseq', update = FALSE, ask = FALSE, force = TRUE); \
+        cat('phyloseq BiocManager installation completed\n'); \
+    }, error = function(e) { \
+        cat('BiocManager phyloseq installation error:', e\$message, '\n'); \
+        cat('Trying alternative Bioconductor installation...\n'); \
+        BiocManager::install('phyloseq', site_repository = 'http://bioconductor.org/packages/3.14/bioc$
+    }); \
+    \
+    # Verify phyloseq installation \
+    if('phyloseq' %in% rownames(installed.packages())) { \
+        library(phyloseq); \
+        cat('✓ phyloseq installed and loads successfully\n'); \
+    } else { \
+        cat('phyloseq still not available, checking available Bioconductor packages...\n'); \
+        available_bioc <- available.packages(repos = BiocManager::repositories()); \
+        if('phyloseq' %in% rownames(available_bioc)) { \
+            cat('phyloseq is available in Bioconductor, forcing installation...\n'); \
+            BiocManager::install('phyloseq', force = TRUE); \
+        } else { \
+            cat('phyloseq not found in current Bioconductor version\n'); \
+        } \
+    }"
+
+# Install zinLDA from correct GitHub repo
+RUN R -e "cat('Installing zinLDA from GitHub...\n'); \
+    library(devtools); \
+    \
+    # Install zinLDA from rebeccadeek/zinLDA \
+    cat('Installing zinLDA from rebeccadeek/zinLDA...\n'); \
+    Sys.setenv(CC='gcc-9', CXX='g++-9', CXX11='g++-9', CXX14='g++-9'); \
+    tryCatch({ \
+        install_github('rebeccadeek/zinLDA', build_vignettes = FALSE); \
+        library(zinLDA); \
+        cat('✓ zinLDA installed and loads successfully\n'); \
+    }, error = function(e) { \
+        cat('zinLDA installation error:', e\$message, '\n'); \
+        cat('Trying with force and no dependencies...\n'); \
+        install_github('rebeccadeek/zinLDA', dependencies = FALSE, force = TRUE); \
+        cat('zinLDA installed with force\n'); \
+    })"
+
+# Install other packages
+RUN R -e "cat('Installing other packages...\n'); \
+    packages <- c('glmnet', 'knockoff', 'topicmodels', 'tidyverse', 'ggplot2', 'ranger', 'kosel', 'res$
+    for(pkg in packages) { \
+        cat('Installing', pkg, '...\n'); \
+        install.packages(pkg, repos='https://cran.rstudio.com/', dependencies=TRUE); \
+        library(pkg, character.only=TRUE); \ 
+        cat('✓', pkg, 'OK\n'); \
+    }"
+
+# Final verification
+RUN R -e "cat('=== FINAL VERIFICATION ===\n'); \
+    required <- c('rstan', 'StanHeaders', 'glmnet', 'knockoff', 'topicmodels', 'tidyverse', 'ggplot2',$
+    for(pkg in required) { \
+        if(pkg %in% rownames(installed.packages())) { \
+            version <- as.character(packageVersion(pkg)); \
+            library(pkg, character.only=TRUE); \
+            cat('✓', pkg, 'version', version, '- loads OK\n'); \
+        } else { \
+            stop(paste('Package', pkg, 'missing')); \
+        } \
+    }; \
+    cat('\n🎉 ALL PACKAGES VERIFIED!\n'); \
+    cat('StanHeaders:', as.character(packageVersion('StanHeaders')), '\n'); \
+    cat('rstan:', as.character(packageVersion('rstan')), '\n'); \
+    cat('Container ready for production!\n')"
+        
+WORKDIR /app
+CMD ["R", "--version"]
+
