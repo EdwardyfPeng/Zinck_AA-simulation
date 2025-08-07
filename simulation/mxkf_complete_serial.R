@@ -220,11 +220,9 @@ generate_data_AA <- function(p, pos, u, seed){
   n <- nrow(Pi)
   
   ## Generating binary responses (case=1, control=0)
-  #set.seed(1)
   Y <- sample(rep(0:1, each=250)) 
   
   # Randomly select 30 biomarkers from top 200 abundant features
-  #set.seed(2)
   biomarker_idx <- sample(1:200, 30, replace = FALSE)
   # Assign effect directions
   n_positive <- round(30 * pos / 100)
@@ -246,7 +244,6 @@ generate_data_AA <- function(p, pos, u, seed){
   Pi_new <- Pi_new / rowSums(Pi_new) # renormalize
   
   # Draw sequencing depths for current samples
-  #set.seed(3)
   template_seq_depths <- rowSums(count)
   # The sequencing depth was randomly drawn from the pool of sequencing depth of the template data.
   drawn_depths <- sample(template_seq_depths, size = n, replace = TRUE)
@@ -254,7 +251,6 @@ generate_data_AA <- function(p, pos, u, seed){
   adjusted_depths[Y == 1] <- drawn_depths[Y == 1] * (1 + u) # Apply depth increase to case group
   
   ## Generate simulated count data
-  set.seed(1)
   sim_count <- matrix(0, nrow = n, ncol = p)
   for (i in 1:n) {
     sim_count[i, ] <- rmultinom(1, size = adjusted_depths[i], prob = Pi_new[i, ])
