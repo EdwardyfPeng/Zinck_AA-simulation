@@ -25,6 +25,9 @@ library(kosel)
 library(reshape2)
 library(lubridate)
 library(Matrix)
+library(parallel)
+library(foreach)
+library(doParallel)
 
 log_normalize <- function(X) {
   # Ensure input is a matrix
@@ -329,24 +332,25 @@ run_lda_iteration <- function(sim_params){
     warning(sprintf("Iteration failed for sim %d: %s", sim, e$message))
     return(failed_result)
   })
+}
   
   
-  cat("begin parallel computations...\n")
-  n_cores <- 4  
-  n_iter <- 100 
-  start_time <- Sys.time()
+cat("begin parallel computations...\n")
+n_cores <- 4  
+n_iter <- 100 
+start_time <- Sys.time()
   
-  sim_param_list <- lapply(1:n_iter, function(sim_id) {
-    list(p = p, pos = pos, u = u, sim = sim_id, target_fdr = target_fdr)
+sim_param_list <- lapply(1:n_iter, function(sim_id) {
+  list(p = p, pos = pos, u = u, sim = sim_id, target_fdr = target_fdr)
   })
   
-  cl <- makeCluster(n_cores)
-  registerDoParallel(cl)
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
   
-  clusterExport(cl, c("generate_data_AA", "generateKnockoff",
-                      "zinck.filter", "log_normalize", "run_lda_iteration",
-                      "count"))
-  clusterEvalQ(cl, {
+clusterExport(cl, c("generate_data_AA", "generateKnockoff",
+                    "zinck.filter", "log_normalize", "run_lda_iteration",
+                    "count"))
+clusterEvalQ(cl, {
     library(topicmodels)
     library(randomForest)
     library(knockoff)
@@ -356,25 +360,24 @@ run_lda_iteration <- function(sim_params){
     library(lubridate)
   })
   
-  batch_results <- foreach(params = sim_param_list,
-                           .combine = rbind,
-                           .packages = c("topicmodels", "randomForest", "knockoff", 
-                                         "Matrix", "stats", "kosel","lubridate"),
-                           .errorhandling = "pass") %dopar% {
-                             run_lda_iteration(params)
+batch_results <- foreach(params = sim_param_list,
+                         .combine = rbind,
+                         .packages = c("topicmodels", "randomForest", "knockoff", 
+                                       "Matrix", "stats", "kosel","lubridate"),
+                         .errorhandling = "pass") %dopar% {
+                           run_lda_iteration(params)
                            }
   
-  stopCluster(cl)
-  registerDoSEQ()
+stopCluster(cl)
+registerDoSEQ()
   
-  end_time <- Sys.time()
+end_time <- Sys.time()
   
-  # save results
-  output_file <- sprintf("lda_results_p%d_pos%d_u%.1f_fdr%.2f.RData", p, pos, u, target_fdr)
-  save(batch_results, file = output_file)
+# save results
+output_file <- sprintf("lda_results_p%d_pos%d_u%.1f_fdr%.2f.RData", p, pos, u, target_fdr)
+save(batch_results, file = output_file)
   
-  elapsed <- as.numeric(end_time - start_time)
-  cat(sprintf("total complete time: %.1f h\n", elapsed/3600))
+elapsed <- as.numeric(end_time - start_time)
+cat(sprintf("total complete time: %.1f h\n", elapsed/3600))
   
-  cat("Complete simulation for LDA-KF ends!\n")
-}
+cat("Complete simulation for LDA-KF ends!\n")
