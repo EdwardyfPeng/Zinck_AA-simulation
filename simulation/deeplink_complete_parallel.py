@@ -107,41 +107,159 @@ dnn_met = 'elu'
 mlp_verb = 0 # verbose level of mlp
 l1 = 0.001 # l1 regularization factor in mlp
 lr = 0.001 # learning rate for mlp training
-q=0.2 #FDR
 
-X -= np.mean(X, axis=0)
-# Prevent division by zero: Replace zero std with 1 before dividing
-std_dev = np.std(X, axis=0, ddof=1)
-std_dev[std_dev == 0] = 1  # Avoid division by zero
-X /= std_dev
+def run_deeplink(X, Y, target_fdr):
+    try:
+        # Standardize X
+        X_std = X.copy()
+        X_std = X_std - np.mean(X_std, axis=0)
+        std_dev = np.std(X_std, axis=0, ddof=1)
+        std_dev[std_dev == 0] = 1
+        X_std = X_std / std_dev
 
-# Normalize X1 while ensuring no division by zero in normalization
-norms = np.sqrt(np.sum(X ** 2, axis=0))
-norms[norms == 0] = 1  # Avoid division by zero
-X1 = X / norms
-r_hat = PCp1(X1, 15)
+        # Normalize X1
+        norms = np.sqrt(np.sum(X_std ** 2, axis=0))
+        norms[norms == 0] = 1
+        X1 = X_std / norms
+        # Estimate r_hat
+        r_hat = PCp1(X1, 15)
+        # generate knockoff
+        Xnew = dl.knockoff_construct(X_std, r_hat, aut_met, aut_epoch, aut_loss, aut_verb)
 
-############## Binary Outcomes ################
-mlp_loss = 'binary_crossentropy'
-Xnew = dl.knockoff_construct(X, r_hat, 'relu', aut_epoch, aut_loss, aut_verb)
+        n_features = Xnew.shape[1] // 2
+        
+        # implement DeepPINK
+        es = EarlyStopping(monitor='val_loss', patience=30, verbose=2)
+        dp = Sequential()
+        dp.add(PairwiseConnected(input_shape=(2 * n_features,)))
+        dp.add(Dense(n_features, activation='elu', kernel_regularizer=keras.regularizers.l1(l1=0.001)))
+        dp.add(Dense(1, activation='relu',
+                     kernel_regularizer=keras.regularizers.l1_l2(l1=0.001, l2=0.001)))
+        dp.compile(loss=mlp_loss, optimizer=keras.optimizers.Adam(learning_rate=lr))
+        dp.fit(Xnew, Y, epochs=mlp_epoch, batch_size=32, verbose=mlp_verb, validation_split=0.1, callbacks=[es])
 
-p = Xnew.shape[1] // 2
- # implement DeepPINK
-es = EarlyStopping(monitor='val_loss', patience=30, verbose=2)
-dp = Sequential()
-dp.add(PairwiseConnected(input_shape=(2 * p,)))
-dp.add(Dense(p, activation='elu', kernel_regularizer=keras.regularizers.l1(l1=l1)))
-dp.add(Dense(1, activation='relu',
-                    kernel_regularizer=keras.regularizers.l1_l2(l1=0.001, l2=0.001)))
-dp.compile(loss=mlp_loss, optimizer=keras.optimizers.Adam(learning_rate=lr))
-dp.fit(Xnew, Y, epochs=mlp_epoch, batch_size=32, verbose=mlp_verb, validation_split=0.1, callbacks=[es])
+        weights = dp.get_weights()
+        w = weights[1] @ weights[3]
+        w = w.reshape(n_features, )
+        z = weights[0][:n_features]
+        z_tilde = weights[0][n_features:]
+        W = (w * z) ** 2 - (w * z_tilde) ** 2
+        
+        # Feature selection
+        selected = dl.knockoff_select(W, target_fdr, ko_plus=False)
+        
+        return selected
+        
+    except Exception as e:
+        print(f"DeepLINK failed: {e}")
+        return np.array([])
 
- # calculate knockoff statistics W_j
-weights = dp.get_weights()
-w = weights[1] @ weights[3]
-w = w.reshape(p, )
-z = weights[0][:p]
-z_tilde = weights[0][p:]
-W = (w * z) ** 2 - (w * z_tilde) ** 2
-# feature selection
-selected = dl.knockoff_select(W, q, ko_plus=False)
+def calculate_metrics(selected, signal_indices):
+    n_selected = len(selected)
+    
+    if n_selected == 0:
+        empirical_fdr = 0.0
+        power = 0.0
+    else:
+        true_positives = len(set(selected) & set(signal_indices))
+        false_positives = n_selected - true_positives
+        empirical_fdr = false_positives / n_selected if n_selected > 0 else 0.0
+        power = true_positives / len(signal_indices) if len(signal_indices) > 0 else 0.0
+    
+    return empirical_fdr, power, n_selected
+
+def run_single_simulation(params):
+    p, pos, u, sim_id = params
+    # Set unique seed for this simulation
+    seed = 12345 + sim_id * 1000 + p + pos * 10 + int(u * 100)
+
+    try:
+        data = generate_data_AA(p, pos, u, seed)
+        X, Y, signal_indices = data['X'], data['Y'], data['signal_indices']
+        results = []
+        target_fdrs = [0.05, 0.1, 0.15, 0.2]
+
+        for target_fdr in target_fdrs:
+            selected = run_deeplink(X, Y, target_fdr)
+            empirical_fdr, power, n_selected = calculate_metrics(selected, signal_indices)
+            
+            results.append({
+                'p': p,
+                'pos': pos,
+                'u': u,
+                'sim': sim_id,
+                'target_fdr': target_fdr,
+                'method': 'DeepLINK',
+                'empirical_fdr': empirical_fdr,
+                'power': power,
+                'n_selected': n_selected
+            })
+
+        return results
+
+    except Exception as e:
+        print(f"Simulation failed for params {params}: {e}")
+        return []
+
+def run_simulation_for_combination(combo_params):
+    p, pos, u = combo_params
+    print(f"Starting simulations for p={p}, pos={pos}%, u={u}")
+    
+    # Create parameter list for all 100 simulations
+    params_list = [(p, pos, u, sim_id) for sim_id in range(1, 101)]
+    
+    # Run 100 simulations in parallel using 8 cores
+    with mp.Pool(processes=8) as pool:
+        all_results_nested = pool.map(run_single_simulation, params_list)
+    
+    # Flatten the nested results
+    all_results = []
+    for sim_results in all_results_nested:
+        all_results.extend(sim_results)
+    # Convert to DataFrame
+    results_df = pd.DataFrame(all_results)
+    
+    # Save results for this combination
+    filename = f"simulation_results_p{p}_pos{pos}_u{u}.csv"
+    results_df.to_csv(filename, index=False)
+    print(f"Completed and saved results for p={p}, pos={pos}%, u={u} to {filename}")
+    
+    return results_df
+
+def main():
+    p_values = [200, 300, 400]
+    pos_values = [40, 80, 100]
+    u_values = [0, 0.5, 1.0]
+    
+    combinations = [(p, pos, u) for p in p_values for pos in pos_values for u in u_values]
+    print(f"Total parameter combinations: {len(combinations)}")
+    print("Each combination will run 100 simulations in parallel using 8 cores")
+    
+    # Run simulations sequentially across combinations 
+    # (each combination uses 8 cores internally)
+    all_combination_results = []
+    for i, combo in enumerate(combinations, 1):
+        print(f"\n=== Processing combination {i}/{len(combinations)} ===")
+        result_df = run_simulation_for_combination(combo)
+        all_combination_results.append(result_df)
+    
+    # Combine all results
+    final_results = pd.concat(all_combination_results, ignore_index=True)
+    
+    # Save combined results
+    final_results.to_csv("complete_simulation_results.csv", index=False)
+    print(f"\n=== All simulations completed! ===")
+    print(f"Total rows in final results: {len(final_results)}")
+    
+    return final_results
+
+if __name__ == "__main__":
+    # Set up for reproducibility
+    np.random.seed(42)
+    random.seed(42)
+    tf.random.set_seed(42)
+    
+    # Run simulations
+    results = main()
+
+
