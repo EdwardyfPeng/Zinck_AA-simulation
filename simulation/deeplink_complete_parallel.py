@@ -174,11 +174,9 @@ def calculate_metrics(selected, signal_indices):
 
 def run_single_simulation(params):
     p, pos, u, sim_id = params
-    # Set unique seed for this simulation
-    seed = 12345 + sim_id * 1000 + p + pos * 10 + int(u * 100)
 
     try:
-        data = generate_data_AA(p, pos, u, seed)
+        data = generate_data_AA(p, pos, u, sim_id)
         X, Y, signal_indices = data['X'], data['Y'], data['signal_indices']
         results = []
         target_fdrs = [0.05, 0.1, 0.15, 0.2]
