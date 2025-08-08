@@ -10,6 +10,10 @@ from itertools import combinations
 from keras.callbacks import EarlyStopping
 import tensorflow as tf
 import random
+import multiprocessing as mp
+from functools import partial
+import warnings
+warnings.filterwarnings('ignore')
 
 count =  pd.read_csv("/Users/edwardpeng/Desktop/RA/zinckAA_sim/count.csv")
 count = count.values  # convert to array
