@@ -10,8 +10,6 @@ from itertools import combinations
 from keras.callbacks import EarlyStopping
 import tensorflow as tf
 import random
-import multiprocessing as mp
-from functools import partial
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -173,74 +171,101 @@ def calculate_metrics(selected, signal_indices):
     return empirical_fdr, power, n_selected
 
 def run_single_simulation(params):
-    p, pos, u, sim_id = params
-
+    p, pos, u, target_fdr, sim_id = params  
+    
+    # Use sim_id directly as seed (1-100)
+    seed = sim_id
+    
     try:
-        data = generate_data_AA(p, pos, u, sim_id)
+        # Generate data
+        data = generate_data_AA(p, pos, u, seed)
         X, Y, signal_indices = data['X'], data['Y'], data['signal_indices']
-        results = []
-        target_fdrs = [0.05, 0.1, 0.15, 0.2]
-
-        for target_fdr in target_fdrs:
-            selected = run_deeplink(X, Y, target_fdr)
-            empirical_fdr, power, n_selected = calculate_metrics(selected, signal_indices)
-            
-            results.append({
-                'p': p,
-                'pos': pos,
-                'u': u,
-                'sim': sim_id,
-                'target_fdr': target_fdr,
-                'method': 'DeepLINK',
-                'empirical_fdr': empirical_fdr,
-                'power': power,
-                'n_selected': n_selected
-            })
-
-        return results
-
+        
+        # Run DeepLINK for this specific target_fdr
+        selected = run_deeplink(X, Y, target_fdr)
+        empirical_fdr, power, n_selected = calculate_metrics(selected, signal_indices)
+        
+        result = {
+            'p': p,
+            'pos': pos,
+            'u': u,
+            'sim': sim_id,
+            'target_fdr': target_fdr,
+            'method': 'DeepLINK',
+            'empirical_fdr': empirical_fdr,
+            'power': power,
+            'n_selected': n_selected
+        }
+        
+        return result
+        
     except Exception as e:
         print(f"Simulation failed for params {params}: {e}")
-        return []
+        return None
 
 def run_simulation_for_combination(combo_params):
     p, pos, u = combo_params
     print(f"Starting simulations for p={p}, pos={pos}%, u={u}")
-    
-    # Create parameter list for all 100 simulations
-    params_list = [(p, pos, u, sim_id) for sim_id in range(1, 101)]
-    
-    # Run 100 simulations in parallel using 8 cores
-    with mp.Pool(processes=8) as pool:
-        all_results_nested = pool.map(run_single_simulation, params_list)
-    
-    # Flatten the nested results
+
+    target_fdrs = [0.05, 0.1, 0.15, 0.2]
     all_results = []
-    for sim_results in all_results_nested:
-        all_results.extend(sim_results)
+
+    # Create all parameter combinations for this (p, pos, u)
+    all_params = []
+    for target_fdr in target_fdrs:
+        for sim_id in range(1, 101):
+            all_params.append((p, pos, u, target_fdr, sim_id))
+    print(f"  Total simulations for this combination: {len(all_params)}")
+    
+    # Run simulations sequentially with progress tracking
+    for i, params in enumerate(all_params, 1):
+        if i % 50 == 0:
+            print(f"    Progress: {i}/{len(all_params)} ({i/len(all_params)*100:.1f}%)")
+        result = run_single_simulation(params)
+        if result is not None:
+            all_results.append(result)
     # Convert to DataFrame
     results_df = pd.DataFrame(all_results)
     
     # Save results for this combination
     filename = f"simulation_results_p{p}_pos{pos}_u{u}.csv"
     results_df.to_csv(filename, index=False)
-    print(f"Completed and saved results for p={p}, pos={pos}%, u={u} to {filename}")
+    print(f"✓ Completed and saved results for p={p}, pos={pos}%, u={u} to {filename}")
+    print(f"  Total rows saved: {len(results_df)}")
     
     return results_df
 
 def main():
+    start_time = time.time()
     p_values = [200, 300, 400]
     pos_values = [40, 80, 100]
     u_values = [0, 0.5, 1.0]
+    target_fdrs = [0.05, 0.1, 0.15, 0.2]
     
     combinations = [(p, pos, u) for p in p_values for pos in pos_values for u in u_values]
-    print(f"Total parameter combinations: {len(combinations)}")
-    print("Each combination will run 100 simulations in parallel using 8 cores")
+    total_sims = len(combinations) * len(target_fdrs) * 100
     
-    # Run simulations sequentially across combinations 
-    # (each combination uses 8 cores internally)
+    print("=" * 60)
+    print("SIMULATION STUDY - DeepLINK Performance Evaluation")
+    print("=" * 60)
+    print(f"Total parameter combinations: {len(combinations)}")
+    print(f"Each combination will test {len(target_fdrs)} target_fdr levels")
+    print(f"Each target_fdr level will run 100 simulations")
+    print(f"Total simulations: {total_sims}")
+    print("Running sequentially (single-threaded)")
+    print(f"Estimated time: ~15 hours (assuming 5sec/simulation)")
+    print("=" * 60)
+
+# Run simulations sequentially across combinations
     all_combination_results = []
     for i, combo in enumerate(combinations, 1):
+        elapsed = time.time() - start_time
+        if i > 1:
+            avg_time_per_combo = elapsed / (i - 1)
+            remaining_combos = len(combinations) - i + 1
+            eta = remaining_combos * avg_time_per_combo
+            print(f"\n⏱️  Elapsed: {elapsed/3600:.1f}h, ETA: {eta/3600:.1f}h")
+        
         print(f"\n=== Processing combination {i}/{len(combinations)} ===")
         result_df = run_simulation_for_combination(combo)
         all_combination_results.append(result_df)
@@ -250,8 +275,19 @@ def main():
     
     # Save combined results
     final_results.to_csv("complete_simulation_results.csv", index=False)
-    print(f"\n=== All simulations completed! ===")
+    
+    total_time = time.time() - start_time
+    print("=" * 60)
+    print("🎉 ALL SIMULATIONS COMPLETED! 🎉")
+    print("=" * 60)
+    print(f"Total runtime: {total_time/3600:.2f} hours")
     print(f"Total rows in final results: {len(final_results)}")
+    print(f"Average time per simulation: {total_time/total_sims:.2f} seconds")
+    print("Files created:")
+    print("  - complete_simulation_results.csv (combined results)")
+    for combo in combinations:
+        p, pos, u = combo
+        print(f"  - simulation_results_p{p}_pos{pos}_u{u}.csv")
     
     return final_results
 
