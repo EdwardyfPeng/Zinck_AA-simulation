@@ -271,7 +271,7 @@ run_mxkf_iteration <- function(sim_id){
     Xlog <- log_normalize(X_sim)
     Xlog_tilde <- create.second_order(Xlog)      
     index_est <- zinck.filter(Xlog, Xlog_tilde, as.factor(Y_sim), 
-                              model="Random Forest", fdr=0.2, seed=1)$selected
+                              model="Random Forest", fdr=target_fdr, seed=1)$selected
     
     # Calculate fdr and power for MX-KF
     FN_mxkf <- sum(!(true_indices %in% index_est))
